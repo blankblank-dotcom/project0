@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+assets/external/
+*.db
+.web
+.states
+
+# Large Model weights
+qwen2vl_2b_local/
+qwen_ov_int4/
+
+# Build artifacts and temp files
+frontend.zip
+benchmark_results.json
+uploaded_files/

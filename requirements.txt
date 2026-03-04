@@ -1,0 +1,49 @@
+# ============================================================================
+# THE LOCAL TITAN — Windows x86_64 / Intel Arc Dependencies
+# Target: Python 3.11+ on Windows 10/11, Intel i5+ (iGPU or CPU inference)
+# ============================================================================
+
+# --- Core Inference Engine (OpenVINO 2026.0 GenAI) ---
+openvino>=2026.0.0
+openvino-genai>=2026.0.0
+openvino-tokenizers>=2026.0.0
+
+# --- Model Export & INT4 Quantization ---
+optimum-intel[nncf]>=1.22.0
+nncf>=2.14.0
+
+# --- Transformers Ecosystem (for model download & tokenizer) ---
+transformers>=4.49.0
+torch>=2.5.0
+torchvision>=0.20.0
+pillow>=10.4.0
+sentencepiece>=0.2.0
+
+# --- Application Framework ---
+reflex>=0.7.0
+pywebview>=5.0             # Native desktop window (Edge WebView2 on Windows)
+
+# --- Document Processing ---
+pypdf>=5.0.0
+python-docx>=1.1.0
+pymupdf>=1.24.0
+python-pptx>=0.6.21
+
+# --- Data Export ---
+pandas>=2.2.0
+openpyxl>=3.1.0
+
+# --- Local Vector DB (RAG) ---
+chromadb>=0.6.0
+
+# --- SQLite (stdlib, no install needed) is used for metadata ---
+
+# --- System Utilities ---
+psutil>=6.0.0
+
+# --- Security ---
+cryptography>=44.0.0
+# 1. Install with: pip install -r requirements.txt
+# 2. Do NOT install flash-attn on Windows — OpenVINO bypasses it entirely.
+# 3. If using Intel Arc GPU, ensure Intel GPU drivers are ≥ 32.0.101.6299.
+# 4. For CPU-only inference, no additional driver setup is required.
