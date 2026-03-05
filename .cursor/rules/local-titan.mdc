@@ -1,0 +1,48 @@
+---
+description: The Local Titan engineering rules (Reflex + OpenVINO + VLM validation)
+alwaysApply: true
+---
+
+# The Local Titan — Cursor Rules
+
+## Reflex event handlers (State)
+
+- Prefer **`async def` event handlers** and **`await`** over sync handlers.
+- Do not block the event loop inside State events; any heavy CPU / inference work must be offloaded.
+
+## OpenVINO inference must not run on the event loop
+
+- Any OpenVINO inference call (or other long-running CPU-bound work) **must be executed via `asyncio.to_thread`**.
+- Rationale: blocking the event loop can cause Reflex/WebSocket disconnects.
+
+Example pattern:
+
+```python
+import asyncio
+
+async def run_infer_async(compiled_model, inputs):
+    return await asyncio.to_thread(compiled_model, inputs)
+```
+
+## Validate VLM outputs with Pydantic
+
+- When consuming/transforming VLM outputs, validate and normalize using **Pydantic models** before acting on the data.
+- Treat VLM outputs as untrusted input: validate required fields, types, bounds/enums, and provide safe defaults.
+
+Example pattern:
+
+```python
+from pydantic import BaseModel, Field
+
+class VLMResult(BaseModel):
+    label: str
+    confidence: float = Field(ge=0.0, le=1.0)
+
+def parse_vlm_output(payload: dict) -> VLMResult:
+    return VLMResult.model_validate(payload)
+```
+
+## Preservation rules (do not delete)
+
+- **Never delete benchmark scripts** (anything used for perf/latency benchmarking).
+- **Never delete OpenVINO configuration headers** (files/blocks required to configure OpenVINO builds/runtimes).

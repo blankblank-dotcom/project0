@@ -202,14 +202,35 @@ def _header() -> rx.Component:
                     size="1",
                 ),
                 rx.cond(
-                    AppState.document_type != "Unknown",
+                    (AppState.document_type == "Unknown") | (AppState.document_confidence < 70),
+                    # Show confidence-based alternatives for uncertain classifications
+                    rx.vstack(
+                        rx.text(
+                            "Document Classification:",
+                            size="2",
+                            weight="bold",
+                            color=_TEXT_MUTED,
+                        ),
+                        rx.text(
+                            f"Primary: {AppState.document_type} ({AppState.document_confidence}%)",
+                            size="1",
+                            color="gray",
+                        ),
+                        rx.text(
+                            "Model is analyzing document type...",
+                            size="1",
+                            color=_TEXT_MUTED,
+                        ),
+                        spacing="1",
+                        align="center",
+                    ),
+                    # Show simple badge for confident classifications
                     rx.badge(
                         AppState.document_type,
                         color_scheme="blue",
                         variant="solid",
                         size="2",
                     ),
-                    rx.fragment(),
                 ),
                 spacing="3",
                 align="center",

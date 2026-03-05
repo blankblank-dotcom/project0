@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import json
 import logging
 import os
 import sys
@@ -33,6 +34,7 @@ from datetime import datetime
 
 import reflex as rx
 from PIL import Image
+from pydantic import BaseModel, Field, ValidationError
 
 # Local Backend
 from backend.engine import InferenceEngine, EngineResult, discover_best_device
@@ -105,6 +107,95 @@ def _obj_to_svg_dict(obj) -> dict:
     }
 
 
+class _ParsedField(BaseModel):
+    label: str = Field(min_length=1)
+    value: str = ""
+    box_2d: list[float] = Field(default_factory=list)
+
+    @property
+    def has_box(self) -> bool:
+        return len(self.box_2d) == 4 and any(v != 0.0 for v in self.box_2d)
+
+
+def _parse_kv_lines(text: str) -> list[_ParsedField]:
+    """Fallback parser for plain `Field: Value` text."""
+    if not text:
+        return []
+
+    fields: list[_ParsedField] = []
+    seen = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip().lstrip("-•").strip()
+        if not line or ":" not in line:
+            continue
+
+        left, right = line.split(":", 1)
+        label = left.strip()
+        value = right.strip()
+        if not label:
+            continue
+        # Filter low-signal values
+        if value.lower() in {"n/a", "none", "not found"}:
+            continue
+
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        try:
+            fields.append(_ParsedField(label=label, value=value))
+        except ValidationError:
+            continue
+
+    return fields
+
+
+def _parse_engine_result(result: Any) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Convert engine output to UI-safe (output_data, bounding_boxes).
+
+    - Trust `result.objects` when present, but validate/normalize it.
+    - Fallback to parsing `result.raw_text` as `Field: Value` lines.
+    """
+    raw_text = getattr(result, "raw_text", "") or ""
+    objs = getattr(result, "objects", None)
+
+    parsed: list[_ParsedField] = []
+
+    if objs:
+        for obj in objs:
+            # Accept both dataclass objects and dicts.
+            payload = {
+                "label": getattr(obj, "label", None) if not isinstance(obj, dict) else obj.get("label"),
+                "value": getattr(obj, "value", None) if not isinstance(obj, dict) else obj.get("value", ""),
+                "box_2d": getattr(obj, "box_2d", None) if not isinstance(obj, dict) else obj.get("box_2d", []),
+            }
+            try:
+                pf = _ParsedField.model_validate(payload)
+            except ValidationError:
+                continue
+            parsed.append(pf)
+
+    if not parsed:
+        parsed = _parse_kv_lines(raw_text)
+
+    # Build sidebar table
+    output_data = [{"field": f.label, "value": (f.value or "Detected")} for f in parsed]
+
+    # Build SVG boxes only for real boxes
+    bounding_boxes: list[dict[str, str]] = []
+    if objs:
+        for obj in objs:
+            try:
+                box = getattr(obj, "box_2d", None) if not isinstance(obj, dict) else obj.get("box_2d")
+                if isinstance(box, list) and len(box) == 4 and any(v != 0.0 for v in box):
+                    bounding_boxes.append(_obj_to_svg_dict(obj))
+            except Exception:
+                continue
+
+    return output_data, bounding_boxes
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # APPLICATION STATE
 # ═══════════════════════════════════════════════════════════════════════════
@@ -155,6 +246,9 @@ class AppState(rx.State):
     image_filename: str = ""
     page_count: int = 0
     current_page: int = 1
+    document_type: str = "Unknown"
+    document_confidence: float = 0.0
+    document_alternatives: list[dict[str, Any]] = []
 
     # --- Metrics ---
     inference_latency_ms: int = 0
@@ -655,47 +749,48 @@ class AppState(rx.State):
         self.error_message = ""
         yield  # Push "Model Thinking..." + progress bar to UI immediately
 
+        result: EngineResult | None = None
         try:
-            # 1. Step: Classification
-            self.processing_status = "📄 Classifying Document..."
-            yield
-            self.document_type = await asyncio.to_thread(
-                backend.engine.classify_document,
-                backend.current_pil_image,
-            )
-
-            # 2. Step: Grounding / Extraction
-            self.processing_status = f"🔍 Extracting {self.document_type} fields..."
+            # Single-pass: classify + extract in one inference call
+            # (previously 3 separate passes; now ~3x faster)
+            self.processing_status = "⚡ Classifying & Extracting (single pass)..."
             yield
             start_time = time.perf_counter()
             result = await asyncio.to_thread(
-                backend.engine.process_document_with_grounding,
+                backend.engine.classify_and_extract,
                 backend.current_pil_image,
-                document_type=self.document_type,
             )
             self.inference_latency_ms = int((time.perf_counter() - start_time) * 1000)
+
+            # Populate classification state from the combined result
+            self.document_type = result.document_type
+            self.document_confidence = result.confidence
+            self.document_alternatives = []
 
             if result.error:
                 self.error_message = result.error
             else:
+                # PII gate: never write sensitive text into Reflex state
+                if getattr(result, "has_pii", False):
+                    summary = getattr(result, "pii_summary", {}) or {}
+                    self.error_message = (
+                        "Sensitive data detected. Please use PII Redaction before viewing results."
+                    )
+                    self.output_data = [
+                        {"field": "PII Detected", "value": json.dumps(summary) if summary else "True"}
+                    ]
+                    self.bounding_boxes = []
+                    self.raw_model_output = ""
+                    self.processing_status = "🔒 PII detected — redaction required."
+                    return
+
                 self.raw_model_output = result.raw_text
 
-                # Convert grounded objects to bounding box dicts for the UI
-                self.bounding_boxes = [_obj_to_svg_dict(obj) for obj in result.objects]
+                output_data, bounding_boxes = _parse_engine_result(result)
+                self.output_data = output_data
+                self.bounding_boxes = bounding_boxes
 
-                # Build the key-value table: Field | Value
-                # We try to use the semantic label/value captured by the engine.
-                self.output_data = [
-                    {
-                        "field": obj.label if obj.label else f"Field {i+1}",
-                        "value": obj.value if obj.value else "Detected"
-                    }
-                    for i, obj in enumerate(result.objects)
-                ]
-
-                self.processing_status = (
-                    f"Done. Found {len(result.objects)} fields in {self.document_type}."
-                )
+                self.processing_status = f"Done. Found {len(self.output_data)} fields in {self.document_type}."
 
         except Exception as e:
             self.error_message = f"Extraction failed: {str(e)}"
@@ -705,7 +800,7 @@ class AppState(rx.State):
             self.is_processing = False
 
         # --- Index for RAG ---
-        if result and not result.error and result.raw_text:
+        if result and not result.error and result.raw_text and not getattr(result, "has_pii", False):
             try:
                 # Extract embedding
                 embedding = await asyncio.to_thread(
@@ -877,13 +972,17 @@ class AppState(rx.State):
 
             excel_path = await asyncio.to_thread(exporter.to_excel)
 
+            # rx.download(url=...) requires a URL starting with '/', not a
+            # Windows filesystem path.  Read the file bytes and send as data.
+            excel_bytes = excel_path.read_bytes()
             self.processing_status = ""
-            yield rx.download(url=str(excel_path), filename=excel_path.name)
+            yield rx.download(data=excel_bytes, filename=excel_path.name)
 
         except Exception as e:
             self.error_message = f"Export failed: {str(e)}"
             self.processing_status = ""
             log.error(f"Export error: {e}", exc_info=True)
+
 
     # ===================================================================
     # BATCH PROCESSING
@@ -1098,7 +1197,8 @@ class AppState(rx.State):
     async def chat_on_enter(self, key: str):
         """Trigger chat only on Enter key."""
         if key == "Enter":
-            return self.chat_with_knowledge_base
+            await self.chat_with_knowledge_base()
+            return  # Explicit return None
 
 
     # ===================================================================

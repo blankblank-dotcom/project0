@@ -185,6 +185,44 @@ def set_master_password(password: str):
 
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EMBEDDING DIMENSION
+# ═══════════════════════════════════════════════════════════════════════════
+# This must match the output of InferenceEngine.get_embeddings() (384 dims).
+EXPECTED_EMBEDDING_DIM = 384
+
+
+def _reset_collection_if_dim_mismatch(client, name: str) -> None:
+    """Delete and recreate a collection whose embedding dimension is wrong.
+
+    ChromaDB raises an error at add-time when the provided embedding doesn't
+    match the dimension that was used when the collection was first created.
+    This guard detects that upfront and resets the collection so new documents
+    can be indexed without error.
+    """
+    try:
+        col = client.get_collection(name=name)
+        # Only probe if there are existing documents
+        if col.count() == 0:
+            return
+
+        probe = col.peek(limit=1)
+        existing_embeddings = probe.get("embeddings") or []
+        if existing_embeddings and len(existing_embeddings[0]) != EXPECTED_EMBEDDING_DIM:
+            stored_dim = len(existing_embeddings[0])
+            log.warning(
+                f"Embedding dimension mismatch in collection '{name}': "
+                f"stored={stored_dim}, expected={EXPECTED_EMBEDDING_DIM}. "
+                f"Deleting stale collection — existing documents will be lost."
+            )
+            client.delete_collection(name=name)
+            log.info(f"Stale collection '{name}' deleted. It will be recreated on next use.")
+    except Exception as e:
+        # Collection may not exist yet — that's fine
+        log.debug(f"Dimension check skipped for '{name}': {e}")
+
+
 def get_or_create_collection(name: str = "documents"):
     """Get or create a named ChromaDB collection.
 
@@ -195,12 +233,17 @@ def get_or_create_collection(name: str = "documents"):
         chromadb.Collection
     """
     client = get_chroma_client()
+
+    # Guard: reset if an existing collection has wrong embedding dimensions
+    _reset_collection_if_dim_mismatch(client, name)
+
     collection = client.get_or_create_collection(
         name=name,
         metadata={"hnsw:space": "cosine"}  # Use cosine similarity for embeddings
     )
     log.info(f"Collection '{name}': {collection.count()} document(s)")
     return collection
+
 
 
 def index_document(

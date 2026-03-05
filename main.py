@@ -184,18 +184,31 @@ def _start_reflex_server():
         log.error(f"Reflex server failed: {e}", exc_info=True)
 
 
-def _wait_for_server(timeout: float = 60.0) -> bool:
-    """Poll the Reflex backend until it responds or timeout."""
+def _wait_for_server(timeout: float = 60.0, max_retries: int = 3) -> bool:
+    """Poll the Reflex backend until it responds or timeout, with retry logic."""
     import urllib.request
     import urllib.error
+    import time
 
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            urllib.request.urlopen(UI_URL, timeout=2)
-            return True
-        except (urllib.error.URLError, OSError):
-            time.sleep(0.5)
+    for attempt in range(max_retries):
+        deadline = time.monotonic() + timeout
+        log.info(f"Server connection attempt {attempt + 1}/{max_retries}")
+        
+        while time.monotonic() < deadline:
+            try:
+                urllib.request.urlopen(UI_URL, timeout=2)
+                log.info("✓ Server is responding")
+                return True
+            except (urllib.error.URLError, OSError) as e:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.5)
+        
+        if attempt < max_retries - 1:
+            log.warning(f"Server not responding, retrying in 5 seconds...")
+            time.sleep(5.0)
+    
+    log.error(f"Server failed to respond after {max_retries} attempts")
     return False
 
 
@@ -293,12 +306,13 @@ def main():
     )
     server_thread.start()
 
-    # Step 4: Wait for server to be ready
+    # Step 4: Wait for server to be ready with retry logic
     log.info(f"Waiting for server at {UI_URL}...")
-    if _wait_for_server(timeout=90.0):
-        log.info("Server is ready!")
+    if _wait_for_server(timeout=90.0, max_retries=3):
+        log.info("✓ Server is ready!")
     else:
-        log.warning("Server did not respond within 90s — opening UI anyway.")
+        log.warning("⚠ Server did not respond after retries - attempting to open UI anyway.")
+        log.warning("If the UI doesn't load, check the console for server errors.")
 
     # Step 5: Close splash, open UI
     if splash:
