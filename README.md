@@ -1,6 +1,6 @@
-# 🪐 The Local Titan: Offline Document Intelligence
+# 🪐 Offline Document Intelligence
 
-**The Local Titan** is a professional-grade, privacy-first Document AI dashboard designed for high-performance inference on consumer hardware. Optimized for Windows 11 and Intel hardware, it leverages the **Qwen 3.5-VL-4B** model quantized to **INT4** to provide state-of-the-art document understanding with zero data exfiltration.
+**It** is a professional-grade, privacy-first Document AI dashboard designed for high-performance inference on consumer hardware. Optimized for Windows 11 and Intel hardware, it leverages the **Qwen 3.5-VL-4B** model quantized to **INT4** to provide state-of-the-art document understanding with zero data exfiltration.
 
 ![The Local Titan Header](https://source.unsplash.com/featured/?artificial-intelligence,document)
 
